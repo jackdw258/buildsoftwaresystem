@@ -1,10 +1,9 @@
-# Build Fembimmo Display on AppVeyor's hosted 64-bit Windows machine.
-# Put this file beside main.py in the repository root.
+
+# Build Fembimmo Display on a hosted Windows machine
 image: Visual Studio 2022
 
-version: 1.0.{build}
+version: 1.1.{build}
 
-# AppVeyor's current Visual Studio 2022 image includes 64-bit Python 3.11.
 environment:
   PYTHON: 'C:\Python311-x64'
 
@@ -12,12 +11,60 @@ install:
   - cmd: '"%PYTHON%\python.exe" --version'
   - cmd: '"%PYTHON%\python.exe" -m pip install --upgrade pip'
   - cmd: '"%PYTHON%\python.exe" -m pip install --upgrade "pywebview[qt]" qtpy PyQt6 PyQt6-WebEngine segno certifi pyinstaller pyinstaller-hooks-contrib'
+  - cmd: '"%PYTHON%\python.exe" -m pip check'
+  - ps: |
+      $hook = @'
+      import os
+      import re
+      import sys
 
-# Use a script build instead of automatic MSBuild detection.
+      for name in (
+          "QT_PLUGIN_PATH",
+          "QT_QPA_PLATFORM_PLUGIN_PATH",
+          "QT_QPA_FONTDIR",
+          "QML2_IMPORT_PATH",
+          "QML_IMPORT_PATH",
+          "QT_CONF_PATH",
+          "PYTHONPATH",
+          "PYTHONHOME",
+      ):
+          os.environ.pop(name, None)
+
+      internal = os.path.normcase(os.path.abspath(
+          getattr(sys, "_MEIPASS", "")
+      ))
+      cleaned = []
+
+      for entry in os.environ.get("PATH", "").split(os.pathsep):
+          if not entry:
+              continue
+          absolute = os.path.normcase(os.path.abspath(entry))
+          try:
+              if internal and os.path.commonpath(
+                  [internal, absolute]
+              ) == internal:
+                  cleaned.append(entry)
+                  continue
+          except (ValueError, OSError):
+              pass
+
+          normalized = entry.replace("/", "\\").lower()
+          foreign_qt = bool(re.search(
+              r"\\(?:qt(?:\d|\\)|pyqt\d*\\qt\d*\\)",
+              normalized
+          ))
+          if not foreign_qt:
+              cleaned.append(entry)
+
+      os.environ["PATH"] = os.pathsep.join(cleaned)
+      '@
+      Set-Content -Path 'rthook_clean_qt_env.py' -Value $hook -Encoding UTF8
+
 build_script:
   - cmd: >-
       "%PYTHON%\python.exe" -m PyInstaller --noconfirm --clean --onedir --console
       --name FembimmoDisplay
+      --runtime-hook rthook_clean_qt_env.py
       --collect-all webview
       --collect-all qtpy
       --collect-all PyQt6
@@ -29,26 +76,32 @@ build_script:
       --hidden-import=PyQt6.QtWebChannel
       main.py
 
-  # Launch the packaged app in diagnostic mode to catch missing bundled Qt modules.
   - ps: |
       $ErrorActionPreference = 'Stop'
       $exe = Join-Path $PWD 'dist\FembimmoDisplay\FembimmoDisplay.exe'
+
       if (-not (Test-Path $exe)) {
-        throw 'PyInstaller did not produce dist\FembimmoDisplay\FembimmoDisplay.exe'
+        throw 'PyInstaller did not produce FembimmoDisplay.exe'
       }
+
+      Write-Host 'Python Qt package versions:'
+      & "$env:PYTHON\python.exe" -m pip show PyQt6 PyQt6-Qt6 PyQt6-WebEngine PyQt6-WebEngine-Qt6
 
       $diagnose = & $exe --diagnose 2>&1
       $exitCode = $LASTEXITCODE
       $diagnose | ForEach-Object { Write-Host $_ }
+
       if ($exitCode -ne 0) {
-        throw "The packaged app diagnostic command failed with exit code $exitCode."
+        throw "The diagnostic command failed with exit code $exitCode."
       }
+
       if (($diagnose -join "`n") -notmatch 'Qt WebEngine: OK') {
-        throw 'Qt WebEngine smoke test failed; check the diagnostic output above.'
+        throw 'Qt WebEngine test failed. Check the log for DLL errors.'
       }
 
       $zip = Join-Path $PWD 'dist\FembimmoDisplay-Windows-x64.zip'
       Compress-Archive -Path (Join-Path (Split-Path $exe -Parent) '*') -DestinationPath $zip -Force
+
       if (-not (Test-Path $zip)) {
         throw 'The portable app ZIP was not created.'
       }
