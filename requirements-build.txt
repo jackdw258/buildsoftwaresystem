@@ -1,0 +1,9 @@
+# Build and runtime packages. Build with 64-bit CPython 3.11 on Windows.
+pywebview[qt]
+qtpy
+PyQt6
+PyQt6-WebEngine
+segno
+certifi
+pyinstaller
+pyinstaller-hooks-contrib

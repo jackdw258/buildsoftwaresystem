@@ -1,0 +1,58 @@
+# Build Fembimmo Display on AppVeyor's hosted 64-bit Windows machine.
+# Put this file beside main.py in the repository root.
+image: Visual Studio 2022
+
+version: 1.0.{build}
+
+# AppVeyor's current Visual Studio 2022 image includes 64-bit Python 3.11.
+environment:
+  PYTHON: 'C:\Python311-x64'
+
+install:
+  - cmd: '"%PYTHON%\python.exe" --version'
+  - cmd: '"%PYTHON%\python.exe" -m pip install --upgrade pip'
+  - cmd: '"%PYTHON%\python.exe" -m pip install --upgrade "pywebview[qt]" qtpy PyQt6 PyQt6-WebEngine segno certifi pyinstaller pyinstaller-hooks-contrib'
+
+# Use a script build instead of automatic MSBuild detection.
+build_script:
+  - cmd: >-
+      "%PYTHON%\python.exe" -m PyInstaller --noconfirm --clean --onedir --console
+      --name FembimmoDisplay
+      --collect-all webview
+      --collect-all qtpy
+      --collect-all PyQt6
+      --collect-all segno
+      --collect-all certifi
+      --hidden-import=webview.platforms.qt
+      --hidden-import=PyQt6.QtWebEngineWidgets
+      --hidden-import=PyQt6.QtWebEngineCore
+      --hidden-import=PyQt6.QtWebChannel
+      main.py
+
+  # Launch the packaged app in diagnostic mode to catch missing bundled Qt modules.
+  - ps: |
+      $ErrorActionPreference = 'Stop'
+      $exe = Join-Path $PWD 'dist\FembimmoDisplay\FembimmoDisplay.exe'
+      if (-not (Test-Path $exe)) {
+        throw 'PyInstaller did not produce dist\FembimmoDisplay\FembimmoDisplay.exe'
+      }
+
+      $diagnose = & $exe --diagnose 2>&1
+      $exitCode = $LASTEXITCODE
+      $diagnose | ForEach-Object { Write-Host $_ }
+      if ($exitCode -ne 0) {
+        throw "The packaged app diagnostic command failed with exit code $exitCode."
+      }
+      if (($diagnose -join "`n") -notmatch 'Qt WebEngine: OK') {
+        throw 'Qt WebEngine smoke test failed; check the diagnostic output above.'
+      }
+
+      $zip = Join-Path $PWD 'dist\FembimmoDisplay-Windows-x64.zip'
+      Compress-Archive -Path (Join-Path (Split-Path $exe -Parent) '*') -DestinationPath $zip -Force
+      if (-not (Test-Path $zip)) {
+        throw 'The portable app ZIP was not created.'
+      }
+
+artifacts:
+  - path: dist/FembimmoDisplay-Windows-x64.zip
+    name: FembimmoDisplay-Windows-x64
